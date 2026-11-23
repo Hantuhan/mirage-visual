@@ -29,12 +29,23 @@ const FORMS = {
     gloves: yesNo,
     police_tape: yesNo,
   },
+  // Visual questions behind the NIST mugshot best practice and OSAC 2024-N-0007 (see MUG_RULES).
   mugshot: {
-    view: { enum: ["front", "profile"] },
-    height_chart: yesNo,
-    placard: yesNo,
-    background: { enum: ["plain wall", "height chart", "other"] },
+    pose: { enum: ["frontal", "left profile", "right profile", "half profile"] },
+    expression: { enum: ["neutral", "smiling", "other"] },
+    eyes: { enum: ["open", "closed"] },
+    mouth: { enum: ["closed", "open"] },
+    eyeglasses: { enum: ["none", "glasses", "glasses with glare"] },
+    head_covering: yesNo,
+    ears_visible: { enum: ["yes", "no"] },
+    background: { enum: ["plain gray", "plain white", "plain other color", "height chart", "busy or patterned"] },
+    background_shadow: yesNo,
+    face_lighting: { enum: ["even", "shadowed", "glare or hot spots"] },
+    sharpness: { enum: ["sharp", "blurry"] },
+    composition: { enum: ["head only", "head and shoulders", "upper body", "full body"] },
     people_count: { type: "integer", minimum: 0, maximum: 5 },
+    placard: yesNo,
+    visible_tattoos: yesNo,
   },
   plate: {
     vehicle: { enum: ["car", "motorcycle", "truck", "bus", "none"] },
@@ -66,7 +77,7 @@ const TASKS = {
   category: { group: "general", title: "Category", desc: "Crime scene, mug shot…", calls: () => [{ extract: FORMS.category }] },
   text: { group: "general", title: "Read text", desc: "Signs, labels, plates", calls: () => [{ describe: { sections: ["text"] } }] },
   crime: { group: "check", title: "Crime scene", desc: "Evidence, markers, weapons", calls: () => [{ extract: FORMS.crime }, { describe: { sections: ["objects", "text"] } }] },
-  mugshot: { group: "check", title: "Mug shot", desc: "View, height chart, placard", calls: () => [{ extract: FORMS.mugshot }] },
+  mugshot: { group: "check", title: "Mug shot", desc: "Check against NIST capture rules", calls: () => [{ extract: FORMS.mugshot }, { describe: { sections: ["objects"] } }] },
   plate: { group: "check", title: "Car plate", desc: "Vehicle and plate number", calls: () => [{ extract: FORMS.plate }, { describe: { sections: ["objects", "text"] } }] },
   kitchen: { group: "check", title: "Kitchen", desc: "Appliances, condition", calls: () => [{ extract: FORMS.kitchen }] },
   custom: { group: "check", title: "Custom", desc: "Your own questions", calls: () => [{ extract: fieldsToSchema() }] },
@@ -129,6 +140,7 @@ function setBusy(b, text = "Analyzing…") {
   state.busy = b;
   $("#busy").hidden = !b;
   $("#busy-text").textContent = text;
+  if (!state.result) renderResults(); // keep the placeholder in step with the busy state
   updateRun();
 }
 
@@ -668,8 +680,129 @@ function describeHtml(r, task) {
   return parts.join("");
 }
 
+// ---------- mug shot capture standards ----------
+// Sources: NIST "Best Practice Recommendation for the Capture of Mugshots" / face-pose best practice
+// (ANSI/NIST-ITL Type-10), and OSAC 2024-N-0007 on head coverings, accessories and make-up.
+const NIST = "NIST mugshot best practice";
+const OSAC = "OSAC 2024-N-0007";
+// For each Mirage field: which answers pass, which only need checking, and the rule behind it.
+const MUG_RULES = [
+  { field: "pose", label: "Frontal pose", pass: ["frontal"], warn: ["half profile", "left profile", "right profile"], src: NIST, why: "A full-face frontal image must always be captured; profiles are taken in addition." },
+  { field: "people_count", label: "One person only", pass: ["1"], src: NIST, why: "Composition is a single subject's head (and shoulders) on a plain background." },
+  { field: "expression", label: "Neutral expression", pass: ["neutral"], src: NIST, why: "Neutral, non-smiling; a closed-mouth smile is not recommended." },
+  { field: "eyes", label: "Eyes open", pass: ["open"], src: NIST, why: "Both eyes open normally; iris and pupil clearly visible." },
+  { field: "mouth", label: "Mouth closed", pass: ["closed"], src: NIST, why: "Mouth closed." },
+  { field: "eyeglasses", label: "No glare on glasses", pass: ["none", "glasses"], src: NIST, why: "Glasses may be worn; with significant glare, take a second frontal without them." },
+  { field: "head_covering", label: "No head covering", pass: ["absent"], warn: ["present"], src: OSAC, why: "A primary mugshot is captured without head coverings, accessories or make-up; accommodations may apply." },
+  { field: "ears_visible", label: "Ears visible", pass: ["yes"], warn: ["no"], src: NIST, why: "Ears visible; hair pushed back or tied when appropriate." },
+  { field: "background", label: "Plain gray background", pass: ["plain gray"], warn: ["plain white", "plain other color"], src: NIST, why: "Plain, smooth 18% gray background; head-to-background boundary clear." },
+  { field: "background_shadow", label: "No background shadow", pass: ["absent"], src: NIST, why: "No shadows on the background behind the face." },
+  { field: "face_lighting", label: "Even face lighting", pass: ["even"], src: NIST, why: "Light equally distributed; no dark eye sockets, no hot spots on cheeks or forehead." },
+  { field: "sharpness", label: "In focus", pass: ["sharp"], src: NIST, why: "Face in focus from the nose to the ears." },
+  { field: "composition", label: "Head (and shoulders) framing", pass: ["head only", "head and shoulders"], warn: ["upper body"], src: NIST, why: "Head-only or head-and-shoulders composition." },
+];
+
+// Pixel measurements done locally on the image (no model involved).
+function measureImage(bmp) {
+  const s = Math.min(1, 320 / Math.max(bmp.width, bmp.height));
+  const w = Math.max(8, Math.round(bmp.width * s)), h = Math.max(8, Math.round(bmp.height * s));
+  const g = new OffscreenCanvas(w, h).getContext("2d", { willReadFrequently: true });
+  g.drawImage(bmp, 0, 0, w, h);
+  const px = g.getImageData(0, 0, w, h).data;
+  const patch = (x0, y0, pw, ph) => {
+    let r = 0, gg = 0, b = 0, n = 0;
+    for (let y = y0; y < y0 + ph; y++) for (let x = x0; x < x0 + pw; x++) {
+      const i = (y * w + x) * 4; r += px[i]; gg += px[i + 1]; b += px[i + 2]; n++;
+    }
+    return [r / n, gg / n, b / n];
+  };
+  let chroma = 0, n = 0;
+  for (let i = 0; i < px.length; i += 16) { chroma += Math.abs(px[i] - px[i + 1]) + Math.abs(px[i + 1] - px[i + 2]); n++; }
+  const pw = Math.max(2, Math.round(w * 0.1)), ph = Math.max(2, Math.round(h * 0.1));
+  const ix = Math.round(w * 0.02), iy = Math.round(h * 0.02);
+  return { width: bmp.width, height: bmp.height, chroma: chroma / n, corners: [patch(ix, iy, pw, ph), patch(w - ix - pw, iy, pw, ph)] };
+}
+
+function mugshotChecks(r) {
+  const m = measureImage(state.bitmap);
+  const rows = [];
+  const add = (label, status, detail, src, why) => rows.push({ label, status, detail, src, why });
+
+  // Measured
+  const ratio = m.width / m.height;
+  add("3:4 aspect ratio", Math.abs(ratio - 0.75) <= 0.03 ? "pass" : "fail", `${m.width}×${m.height} is ${ratio.toFixed(2)}:1, expected 0.75:1 (3:4)`, NIST, "Width:height of the captured image is 3:4, e.g. 600×800 or 768×1024.");
+  add("Resolution", m.width >= 600 && m.height >= 800 ? "pass" : m.width >= 480 && m.height >= 600 ? "warn" : "fail", `${m.width}×${m.height}, recommended at least 600×800`, NIST, "Common capture sizes are 600×800 and 768×1024; no digital zoom.");
+  add("Color image", m.chroma > 3 ? "pass" : "fail", m.chroma > 3 ? "Color" : "Looks grayscale", NIST, "Captured facial images are in color (24-bit RGB).");
+  const bg = m.corners.map(([R, G, B]) => {
+    const neutral = Math.max(R, G, B) - Math.min(R, G, B) <= 10;
+    const inRange = [R, G, B].every((v) => v >= 95 && v <= 135);
+    return { neutral, inRange, mean: Math.round((R + G + B) / 3) };
+  });
+  const bgStatus = bg.every((c) => c.neutral && c.inRange) ? "pass" : bg.every((c) => c.neutral) ? "warn" : "fail";
+  add("18% gray background (measured)", bgStatus,
+    `Top corners average ${bg.map((c) => c.mean).join(" and ")} of 255; target ~115 (105–125), gray with channels within 10${bgStatus === "warn" ? "; neutral but too light or dark" : bgStatus === "fail" ? "; not a neutral gray" : ""}`,
+    NIST, "Background is 18% gray: RGB means 105–125 and channels within 10 of each other.");
+
+  // Head size and centering from Mirage's face/person box
+  const objs = r.describe?.objects || [];
+  const face = objs.find((o) => /\b(face|head)\b/i.test(o.name)) || objs.find((o) => /\b(person|man|woman|boy|girl|human)\b/i.test(o.name));
+  if (face?.bbox) {
+    const [x0, , x1] = face.bbox;
+    const off = Math.abs((x0 + x1) / 2 - 500) / 10;
+    add("Head centered", off <= 5 ? "pass" : off <= 10 ? "warn" : "fail", `${/face|head/i.test(face.name) ? "Face" : "Person"} box is ${off.toFixed(0)}% off center`, NIST, "Nose bridge and mouth midpoints on the image's vertical center line.");
+    if (/face|head/i.test(face.name)) {
+      const wpct = (x1 - x0) / 10;
+      add("Head size", wpct >= 40 && wpct <= 80 ? "pass" : "warn", `Head is ${wpct.toFixed(0)}% of image width; ~50% head-and-shoulders, ~70% head-only`, NIST, "Head width about 50% (head and shoulders) or 70% (head only) of the image width.");
+    }
+  } else {
+    add("Head centered", "unclear", "No face or person box detected", NIST, "Nose bridge and mouth midpoints on the image's vertical center line.");
+  }
+
+  // Judged by Mirage. Its answers are often wrong on fine facial detail, so they never produce a
+  // hard Fail: anything that doesn't pass becomes "Check" for a person to confirm.
+  const seen = JSON.stringify(objs).toLowerCase();
+  for (const rule of MUG_RULES) {
+    const f = readField(r.form?.[rule.field]);
+    if (!f || f.answer == null || f.declined || (typeof f.p === "number" && f.p < 0.4)) {
+      add(rule.label, "unclear", f?.answer ? `Mirage unsure (maybe ${human(f.answer)})` : "Mirage unsure", rule.src, rule.why);
+      continue;
+    }
+    const a = String(f.answer);
+    // Cross-check: glasses claimed but the object pass saw none → don't raise a false alarm.
+    if (rule.field === "eyeglasses" && a !== "none" && !/glass|spectacle/.test(seen)) {
+      add(rule.label, "unclear", `Mirage's passes disagree: form says ${human(a)}, objects show no glasses`, rule.src, rule.why);
+      continue;
+    }
+    add(rule.label, rule.pass.includes(a) ? "pass" : "warn", `Mirage: ${human(a)} (${pct(f.p)})`, rule.src, rule.why);
+  }
+
+  // Notes that are documentation, not pass/fail
+  const notes = [];
+  const tat = readField(r.form?.visible_tattoos);
+  if (tat && !tat.declined && tat.answer === "present") notes.push("Visible tattoos or marks: photograph and record scars, marks and tattoos (SMT) separately.");
+  const plac = readField(r.form?.placard);
+  if (plac && !plac.declined && plac.answer === "present") notes.push("A placard or name board is in frame; it is not part of the NIST image specification.");
+  return { rows, notes };
+}
+
+function mugshotHtml(r) {
+  const { rows, notes } = mugshotChecks(r);
+  const n = (s) => rows.filter((x) => x.status === s).length;
+  const label = { pass: "Pass", warn: "Check", fail: "Fail", unclear: "Unclear" };
+  const cls = { pass: "high", warn: "mid", fail: "fail", unclear: "low" };
+  const verdict = n("fail") ? { t: "Does not meet the standard", c: "fail" } : n("warn") || n("unclear") ? { t: "Needs review", c: "mid" } : { t: "Meets the checked rules", c: "high" };
+  return `<div class="answer"><div class="q">Booking photo capture check</div>
+      <div class="a" style="text-transform:none;font-size:20px">${verdict.t} <span class="badge ${verdict.c}">${n("pass")} of ${rows.length} pass</span></div>
+      <div class="note">${n("fail")} fail · ${n("warn")} to check · ${n("unclear")} unclear. Only measured rules (size, ratio, color, background) can fail; Mirage's judgments are a first pass for a person to confirm.</div></div>
+    ${notes.length ? notes.map((t) => `<p class="notice">${esc(t)}</p>`).join("") : ""}
+    <div><h3 class="section-title">Capture standards <span class="count">${rows.length}</span></h3><ul class="checklist std">${rows.map((x) => `
+      <li><details><summary><span class="sname">${esc(x.label)}</span><span class="badge ${cls[x.status]}">${label[x.status]}</span><span class="sdetail">${esc(x.detail)}</span></summary>
+      <div class="probs"><div class="rule">${esc(x.why)} <span class="src">${esc(x.src)}</span></div></div></details></li>`).join("")}</ul></div>`;
+}
+
 // Task-specific answer pulled from the text pass (OCR), shown above the checklist.
 function headlineHtml(r) {
+  if (r.task === "mugshot" && r.form) return mugshotHtml(r);
   const lines = r.describe?.text || [];
   if (r.task === "plate") {
     const plates = lines.filter((t) => looksLikePlate(t.string)).sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -709,7 +842,11 @@ function renderResults() {
       : `<p class="placeholder">${state.busy ? "Analyzing…" : state.ready ? "Press Analyze to run this task." : "Waiting for the model to load…"}</p>`;
     return;
   }
-  view.innerHTML = (headlineHtml(r) + formHtml(r.form, r.task) + describeHtml(r.describe, r.task)) || `<p class="placeholder">Mirage returned nothing for this task.</p>`;
+  // Mug shot shows the standards table instead of the raw checklist; raw answers stay in JSON.
+  const body = r.task === "mugshot"
+    ? headlineHtml(r) + describeHtml(r.describe, r.task)
+    : headlineHtml(r) + formHtml(r.form, r.task) + describeHtml(r.describe, r.task);
+  view.innerHTML = body || `<p class="placeholder">Mirage returned nothing for this task.</p>`;
   $$(".obj", view).forEach((el) => {
     el.addEventListener("mouseenter", () => setHot(Number(el.dataset.i)));
     el.addEventListener("mouseleave", () => setHot(null));

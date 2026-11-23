@@ -35,8 +35,15 @@ cached per task.
   in Settings.
 - **Category** — crime scene, mug shot, car plate, kitchen, or other.
 - **Read text** — OCR, with plate-like strings highlighted.
-- **Checklists** — Crime scene (also reads evidence-marker numbers), Mug shot, Car plate (also reads the
-  plate number), Kitchen, and Custom questions you write yourself.
+- **Checklists** — Crime scene (also reads evidence-marker numbers), Car plate (also reads the plate
+  number), Kitchen, and Custom questions you write yourself.
+- **Mug shot** — checks a booking photo against capture best practice: the NIST mugshot / face-pose best
+  practice (ANSI/NIST-ITL Type-10) and NIST OSAC 2024-N-0007 on head coverings, accessories and make-up.
+  Measured exactly from pixels: 3:4 aspect ratio, resolution (600×800+), color, 18% gray background
+  (corner RGB means 105–125, channels within 10), head centering and size. Judged by Mirage for a person
+  to confirm: frontal pose, one subject, neutral expression, eyes open, mouth closed, glasses glare, head
+  covering, ears visible, plain background without shadow, even lighting, focus, framing. Visible
+  tattoos and placards are noted. Only measured rules can fail; Mirage's calls are "Check" or "Unclear".
 
 Each answer gets a High / Medium / Low badge. When Mirage declines to answer, its best real choice is
 shown as a low-confidence guess, and the full probabilities are one click away. Hover an object to
