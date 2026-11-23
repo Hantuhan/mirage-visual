@@ -252,6 +252,9 @@ canvas { position: absolute; inset: 0; margin: auto; max-width: 100%; max-height
 .form-out header b { font-family: var(--mono); font-size: 12px; color: var(--muted); font-weight: 500; }
 .form-out .val { font-size: 18px; font-weight: 600; }
 .form-out .val.none { color: var(--faint); font-size: 14px; font-weight: 500; }
+.lean { font-size: 13px; color: var(--muted); margin-top: -4px; }
+.lean b { color: var(--text); }
+.lean span { color: var(--faint); font-size: 12px; }
 .prob { display: grid; grid-template-columns: 70px 1fr 44px; gap: 8px; align-items: center; font-size: 12px; }
 .prob span:first-child { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prob .track { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
@@ -259,6 +262,11 @@ canvas { position: absolute; inset: 0; margin: auto; max-width: 100%; max-height
 .prob.top .track i { background: var(--accent); }
 .prob .pct { font-family: var(--mono); text-align: right; color: var(--muted); }
 
+.notice {
+  margin: 0 0 10px; padding: 10px 12px; border-radius: 8px; font-size: 12.5px; color: var(--text);
+  background: rgba(234, 179, 8, 0.1); border: 1px solid rgba(234, 179, 8, 0.35);
+}
+.hint code { font-family: var(--mono); font-size: 11px; background: var(--panel-2); padding: 0 4px; border-radius: 4px; }
 .json-bar { display: flex; gap: 6px; }
 pre#json {
   margin: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-all;

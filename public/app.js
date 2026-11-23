@@ -12,7 +12,35 @@ const LANGUAGE_LABELS = { auto: "Auto", en: "English", de: "Deutsch", fr: "Fran�
 const MASK_LABELS = { polygons: "Polygons (all pieces)", largest: "Largest piece", merged: "Merged" };
 const MAX_CANVAS = 2048;
 
+const yesNo = { enum: ["present", "absent"] };
 const PRESETS = {
+  "Photo category": {
+    category: { enum: ["crime scene", "mug shot", "kitchen", "other"] },
+  },
+  "Crime scene": {
+    location: { enum: ["indoor", "outdoor"] },
+    evidence_markers: yesNo,
+    marker_count: { type: "integer", minimum: 0, maximum: 30 },
+    blood_stains: yesNo,
+    knife: yesNo,
+    firearm: yesNo,
+    gloves: yesNo,
+    police_tape: yesNo,
+  },
+  "Mug shot": {
+    view: { enum: ["front", "profile"] },
+    height_chart: yesNo,
+    placard: yesNo,
+    background: { enum: ["plain wall", "height chart", "other"] },
+    people_count: { type: "integer", minimum: 0, maximum: 5 },
+  },
+  "Kitchen": {
+    stove: yesNo,
+    sink: yesNo,
+    refrigerator: yesNo,
+    condition: { enum: ["clean", "cluttered", "dirty"] },
+    people_count: { type: "integer", minimum: 0, maximum: 10 },
+  },
   "Scene basics": {
     setting: { enum: ["indoor", "outdoor"] },
     n_people: { type: "integer", minimum: 0, maximum: 50 },
@@ -74,32 +102,70 @@ function updateRun() {
   $(".run-label", btn).textContent = state.busy ? "Running…" : state.mode === "extract" ? "Fill form" : "Analyze";
 }
 
-// ---------- health ----------
-async function pollHealth() {
-  try {
-    const h = await (await fetch("/api/health")).json();
-    const el = $("#status");
-    el.dataset.state = h.status;
-    if (h.status === "ready") {
-      state.ready = true;
-      $("#status-text").textContent = `Model ready${h.load_seconds ? ` · loaded in ${h.load_seconds}s` : ""}`;
-      el.title = h.weights ? `Weights: ${h.weights}` : "";
-      updateRun();
-      return;
-    }
-    if (h.status === "error") {
-      $("#status-text").textContent = "Model failed to load";
-      el.title = h.error || "";
-      toast(h.error || "Model failed to load", true);
-      return;
-    }
-    $("#status-text").textContent = "Loading model…";
-  } catch {
-    $("#status").dataset.state = "error";
-    $("#status-text").textContent = "Server unreachable";
-  }
-  setTimeout(pollHealth, 1500);
+// ---------- in-browser engine (Web Worker) ----------
+const pending = new Map();
+let nextId = 1;
+let worker = null;
+
+function setStatus(stateName, text, title = "") {
+  const el = $("#status");
+  el.dataset.state = stateName;
+  el.title = title;
+  $("#status-text").textContent = text;
 }
+
+function startEngine() {
+  if (typeof WebAssembly !== "object") return setStatus("error", "This browser can't run WebAssembly");
+  worker = new Worker("/worker.js");
+  worker.onmessage = ({ data: m }) => {
+    if (m.type === "progress") {
+      const mb = (n) => (n / 1048576).toFixed(1);
+      const text = m.phase === "engine" ? "Starting engine…"
+        : m.phase === "cache" ? "Loading cached model…"
+        : m.phase === "load" ? "Preparing model…"
+        : m.total ? `Downloading model ${mb(m.loaded)} / ${mb(m.total)} MB` : `Downloading model ${mb(m.loaded)} MB`;
+      setStatus("loading", text);
+    } else if (m.type === "ready") {
+      state.ready = true;
+      setStatus("ready", `Model ready · on your device · ${m.load_seconds}s`, "Mirage runs in this browser; images never leave your device.");
+      updateRun();
+    } else if (m.type === "error") {
+      setStatus("error", "Model failed to load", m.error);
+      toast(m.error, true);
+    } else if (m.type === "result") {
+      const p = pending.get(m.id);
+      pending.delete(m.id);
+      if (!p) return;
+      m.error ? p.reject(new Error(m.error)) : p.resolve(m);
+    }
+  };
+  worker.onerror = (e) => { setStatus("error", "Engine crashed", e.message); toast(e.message || "Engine crashed", true); };
+}
+
+function callEngine(payload) {
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ id, payload }, [payload.rgb]);
+  });
+}
+
+// Packed RGB bytes for the engine. Mirage works on a ≤1536 px canvas internally,
+// so very large photos are scaled down first to save memory.
+const MAX_INPUT = 2048;
+function bitmapToRgb(bmp) {
+  const s = Math.min(1, MAX_INPUT / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * s)), h = Math.max(1, Math.round(bmp.height * s));
+  const c = new OffscreenCanvas(w, h);
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(bmp, 0, 0, w, h);
+  const rgba = g.getImageData(0, 0, w, h).data;
+  const rgb = new Uint8Array(w * h * 3);
+  for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) { rgb[j] = rgba[i]; rgb[j + 1] = rgba[i + 1]; rgb[j + 2] = rgba[i + 2]; }
+  return { rgb: rgb.buffer, width: w, height: h };
+}
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v)));
 
 // ---------- image input ----------
 async function setImage(blob, sampleName = null) {
@@ -143,9 +209,12 @@ function bindInput() {
   });
 }
 
+const SAMPLES = ["cafe_interior.jpg", "pallas_cat.jpg", "sign_beach.jpg", "sneakers_orange_bg.jpg"]
+  .map((name) => ({ name, url: `/samples/${name}` }));
+
 async function loadSamples() {
   try {
-    const { samples } = await (await fetch("/api/samples")).json();
+    const samples = SAMPLES;
     const box = $("#samples");
     box.innerHTML = samples.map((s) => `<button type="button" data-name="${esc(s.name)}" data-url="${esc(s.url)}" title="${esc(s.name)}"><img src="${esc(s.url)}" alt="${esc(s.name)}" loading="lazy"></button>`).join("");
     $$("button", box).forEach((b) => b.addEventListener("click", async () => {
@@ -254,7 +323,7 @@ function buildExtractControls() {
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) { state.fields = schemaToFields(parsed); renderFields(); }
     } catch { /* keep typing */ }
   });
-  loadSchema(PRESETS["Scene basics"]);
+  loadSchema(PRESETS["Photo category"]);
 }
 
 // ---------- mode & tabs ----------
@@ -276,29 +345,33 @@ function bindTabs() {
 // ---------- run ----------
 async function run() {
   if ($("#run").disabled) return;
-  const fd = new FormData();
-  fd.append("image", state.file, state.sampleName || "upload");
-  let url;
+  const conf = clamp($("#conf").value, 0, 1), text_conf = clamp($("#text_conf").value, 0, 1);
+  let options, language = null, echo;
   if (state.mode === "describe") {
-    url = "/api/describe";
-    fd.append("sections", [...state.sections].join(","));
-    fd.append("language", $("#language").value);
-    fd.append("mask_format", $("#mask_format").value);
-    ["conf", "text_conf", "max_objects", "max_text_lines", "max_tokens"].forEach((k) => fd.append(k, $(`#${k}`).value));
-    fd.append("nms", $("#nms").checked);
+    options = {
+      sections: [...state.sections],
+      mask_format: $("#mask_format").value,
+      conf, text_conf,
+      max_objects: clamp($("#max_objects").value, 1, 64) | 0,
+      max_text_lines: clamp($("#max_text_lines").value, 1, 64) | 0,
+      max_tokens: clamp($("#max_tokens").value, 64, 1536) | 0,
+      nms: $("#nms").checked,
+    };
+    language = $("#language").value === "auto" ? null : $("#language").value;
+    echo = { options, language: $("#language").value };
   } else {
-    url = "/api/extract";
     const schema = fieldsToSchema();
     if (!Object.keys(schema).length) return toast("Add at least one complete form field", true);
-    fd.append("form", JSON.stringify(schema));
+    options = { form: schema, conf, text_conf };
+    echo = { form: schema };
   }
   const token = state.imageToken;
   const mode = state.mode;
   setBusy(true);
   try {
-    const res = await fetch(url, { method: "POST", body: fd });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.detail || `Request failed (${res.status})`);
+    const body = { ...(await callEngine({ ...bitmapToRgb(state.bitmap), options, language })), ...echo };
+    delete body.type;
+    delete body.id;
     if (token !== state.imageToken) return; // image changed while running
     state.raw = body;
     state.result = { mode, ...body };
@@ -502,7 +575,12 @@ function extractHtml(r) {
   const form = r.form || {};
   const entries = Object.entries(form);
   if (!entries.length) return `<p class="placeholder">No fields returned.</p>`;
-  return `<section><h3>Form <span class="count">${entries.length} fields</span></h3><div class="list" style="gap:8px">${entries.map(([name, f]) => {
+  const isNone = (v) => v === null || v === undefined || v === "-";
+  const unsure = entries.filter(([, f]) => isNone(f.value)).length;
+  const note = unsure === entries.length
+    ? `<p class="notice">Mirage wasn't confident about any of these fields, so it declined to guess. It's a small 51M-parameter model: it does best when the subject is clear and fills much of the frame, and when the questions and choices fit the photo. Crowded close-ups with many small items are hard for it.</p>`
+    : unsure ? `<p class="hint">${unsure} of ${entries.length} fields had no clear match; Mirage reports that instead of guessing.</p>` : "";
+  return `<section><h3>Form <span class="count">${entries.length} field${entries.length === 1 ? "" : "s"}</span></h3>${note}<div class="list" style="gap:8px">${entries.map(([name, f]) => {
     const none = f.value === null || f.value === undefined || f.value === "-";
     let body = "";
     if (f.probabilities) {
@@ -511,7 +589,12 @@ function extractHtml(r) {
     } else if (typeof f.probability === "number") {
       body = `<div class="prob top"><span>confidence</span><span class="track"><i style="width:${f.probability * 100}%"></i></span><span class="pct">${pct(f.probability)}</span></div>`;
     }
-    return `<div class="form-out"><header><b>${esc(name)}</b></header><div class="val ${none ? "none" : ""}">${none ? "No clear match" : esc(typeof f.value === "object" ? JSON.stringify(f.value) : f.value)}</div>${body}</div>`;
+    // When Mirage declines, still surface its best real choice, marked as low-confidence.
+    const lean = none && f.probabilities
+      ? Object.entries(f.probabilities).filter(([k]) => k !== "-").sort((a, b) => b[1] - a[1])[0]
+      : null;
+    const leanHtml = lean ? `<div class="lean">Leaning: <b>${esc(lean[0])}</b> <span>(${pct(lean[1])}, low confidence)</span></div>` : "";
+    return `<div class="form-out"><header><b>${esc(name)}</b></header><div class="val ${none ? "none" : ""}">${none ? "No clear match" : esc(typeof f.value === "object" ? JSON.stringify(f.value) : f.value)}</div>${leanHtml}${body}</div>`;
   }).join("")}</div></section>`;
 }
 
@@ -541,4 +624,4 @@ bindJson();
 $("#run").addEventListener("click", run);
 window.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run(); });
 loadSamples();
-pollHealth();
+startEngine();
