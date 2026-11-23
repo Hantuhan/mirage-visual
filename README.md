@@ -18,23 +18,29 @@ python3 -m http.server 7860 --directory public
 
 Open http://127.0.0.1:7860.
 
-## Deploy to Cloudflare Pages
+## Deploy to Cloudflare
 
 ```bash
-npx wrangler pages deploy
+npx wrangler deploy
 ```
 
-`wrangler.toml` points Pages at `public/`. Wrangler 4 needs Node 22.12 or newer.
+`wrangler.toml` serves `public/` as static assets on Cloudflare Workers. Wrangler 4 needs Node 22.12 or newer.
 
 ## Features
 
-- **Describe** — pick sections (scene, objects, text, regions, relations, events, reasoning), output
-  language, mask format, and thresholds. Boxes, segmentation masks and OCR lines are drawn over the image;
-  hover an object in the list or on the image to isolate it.
-- **Extract** — build a form of choice / integer / text fields (or edit the JSON) and see the chosen
-  value plus the probability of each option. Extract only answers the questions you write, so tailor
-  them to the photo. “No clear match” means the model declined to guess.
-- Raw JSON view with copy and download.
+Pick a photo (upload, drop, paste, or a sample), then a task. It runs automatically and results are
+cached per task.
+
+- **Overview** — scene, objects with masks and boxes, text. Extra sections (relations, events, reasoning)
+  in Settings.
+- **Category** — crime scene, mug shot, car plate, kitchen, or other.
+- **Read text** — OCR, with plate-like strings highlighted.
+- **Checklists** — Crime scene (also reads evidence-marker numbers), Mug shot, Car plate (also reads the
+  plate number), Kitchen, and Custom questions you write yourself.
+
+Each answer gets a High / Medium / Low badge. When Mirage declines to answer, its best real choice is
+shown as a low-confidence guess, and the full probabilities are one click away. Hover an object to
+isolate it on the image. Raw JSON can be copied or downloaded.
 
 ## Limits
 
