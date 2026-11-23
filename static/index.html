@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mirage Visual</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2310131a'/><circle cx='16' cy='16' r='7' fill='none' stroke='%237cf2c8' stroke-width='3'/><circle cx='16' cy='16' r='2.5' fill='%237cf2c8'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="10" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="16" cy="16" r="3.5" fill="currentColor"/><path d="M16 2v5M16 25v5M2 16h5M25 16h5" stroke="currentColor" stroke-width="2"/></svg>
+      <div>
+        <h1>Mirage Visual</h1>
+        <p>On-device structured vision · Cactus-Compute/mirage</p>
+      </div>
+    </div>
+    <div class="status" id="status" data-state="loading">
+      <span class="dot"></span><span id="status-text">Loading model…</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Controls -->
+    <aside class="panel controls">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-mode="describe" role="tab">Describe</button>
+        <button class="tab" data-mode="extract" role="tab">Extract</button>
+      </div>
+
+      <section>
+        <h2>Image</h2>
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept="image/*" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span><strong>Drop an image</strong> or click to browse</span>
+          <small>Paste from clipboard works too</small>
+        </label>
+        <div class="samples" id="samples"></div>
+      </section>
+
+      <!-- Describe options -->
+      <div data-panel="describe">
+        <section>
+          <h2>Sections</h2>
+          <div class="chips" id="sections"></div>
+          <p class="hint">Each extra section adds decoder work.</p>
+        </section>
+        <section class="grid2">
+          <label class="field">Language
+            <select id="language"></select>
+          </label>
+          <label class="field">Mask format
+            <select id="mask_format"></select>
+          </label>
+        </section>
+        <details class="advanced">
+          <summary>Thresholds &amp; limits</summary>
+          <label class="slider">Object confidence <output id="conf-out">0.50</output>
+            <input type="range" id="conf" min="0" max="1" step="0.05" value="0.5">
+          </label>
+          <label class="slider">Text confidence <output id="text_conf-out">0.35</output>
+            <input type="range" id="text_conf" min="0" max="1" step="0.05" value="0.35">
+          </label>
+          <label class="slider">Max objects <output id="max_objects-out">20</output>
+            <input type="range" id="max_objects" min="1" max="64" step="1" value="20">
+          </label>
+          <label class="slider">Max text lines <output id="max_text_lines-out">20</output>
+            <input type="range" id="max_text_lines" min="1" max="64" step="1" value="20">
+          </label>
+          <label class="slider">Max tokens <output id="max_tokens-out">512</output>
+            <input type="range" id="max_tokens" min="128" max="1536" step="64" value="512">
+          </label>
+          <label class="check"><input type="checkbox" id="nms" checked> Non-max suppression</label>
+        </details>
+      </div>
+
+      <!-- Extract options -->
+      <div data-panel="extract" hidden>
+        <section>
+          <div class="row-head">
+            <h2>Form fields</h2>
+            <select id="preset" aria-label="Load preset">
+              <option value="">Presets…</option>
+            </select>
+          </div>
+          <div id="fields"></div>
+          <button class="ghost" id="add-field" type="button">+ Add field</button>
+        </section>
+        <details class="advanced">
+          <summary>Form JSON</summary>
+          <textarea id="form-json" spellcheck="false" rows="8"></textarea>
+          <p class="hint">Edit directly; the field list updates when the JSON is valid.</p>
+        </details>
+      </div>
+
+      <button class="run" id="run" disabled>
+        <span class="run-label">Analyze</span>
+        <kbd>⌘ ↵</kbd>
+      </button>
+    </aside>
+
+    <!-- Stage -->
+    <section class="panel stage">
+      <div class="stage-bar">
+        <div class="layers" id="layers">
+          <label><input type="checkbox" data-layer="masks" checked> Masks</label>
+          <label><input type="checkbox" data-layer="boxes" checked> Boxes</label>
+          <label><input type="checkbox" data-layer="labels" checked> Labels</label>
+          <label><input type="checkbox" data-layer="text" checked> OCR</label>
+        </div>
+        <div class="meta" id="meta"></div>
+      </div>
+      <div class="canvas-wrap" id="canvas-wrap">
+        <canvas id="canvas"></canvas>
+        <div class="empty" id="empty">
+          <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="10" width="36" height="28" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17" cy="20" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m8 34 10-9 7 6 6-5 9 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          <p>Choose a sample or drop your own image</p>
+        </div>
+        <div class="busy" id="busy" hidden><div class="scan"></div><span>Running Mirage…</span></div>
+      </div>
+    </section>
+
+    <!-- Results -->
+    <aside class="panel results">
+      <div class="tabs small" role="tablist">
+        <button class="tab active" data-view="summary">Results</button>
+        <button class="tab" data-view="json">JSON</button>
+      </div>
+      <div id="view-summary" class="view">
+        <p class="placeholder">Results appear here after you analyze an image.</p>
+      </div>
+      <div id="view-json" class="view" hidden>
+        <div class="json-bar">
+          <button class="ghost" id="copy-json" type="button">Copy</button>
+          <button class="ghost" id="download-json" type="button">Download</button>
+        </div>
+        <pre id="json"></pre>
+      </div>
+    </aside>
+  </main>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>
