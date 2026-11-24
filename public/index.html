@@ -116,8 +116,15 @@
         <div id="view-summary" class="view"></div>
         <div id="view-json" class="view" hidden>
           <div class="json-bar">
-            <button class="btn ghost small" id="copy-json" type="button">Copy</button>
-            <button class="btn ghost small" id="download-json" type="button">Download</button>
+            <div class="json-actions">
+              <button class="btn primary small" id="download-json" type="button">Download .json</button>
+              <button class="btn ghost small" id="copy-json" type="button">Copy</button>
+              <span class="json-size" id="json-size"></span>
+            </div>
+            <div class="json-opts">
+              <label class="check"><input type="checkbox" id="json-masks"> Include masks</label>
+              <label class="check"><input type="checkbox" id="json-raw"> Include raw model output</label>
+            </div>
           </div>
           <pre id="json"></pre>
         </div>
@@ -130,9 +137,15 @@
       <details class="card settings">
         <summary>
           <span>Settings</span>
-          <small>Language, sensitivity, overview sections</small>
+          <small>Output format, language, sensitivity</small>
         </summary>
         <div class="settings-body">
+          <label class="field">Show results as
+            <select id="default-output">
+              <option value="summary">Summary (readable)</option>
+              <option value="json">JSON (structured output)</option>
+            </select>
+          </label>
           <div class="grid2">
             <label class="field">Output language
               <select id="language"></select>

@@ -49,6 +49,36 @@ Each answer gets a High / Medium / Low badge. When Mirage declines to answer, it
 shown as a low-confidence guess, and the full probabilities are one click away. Hover an object to
 isolate it on the image. Raw JSON can be copied or downloaded.
 
+## JSON output
+
+Switch results to **JSON** (or set *Settings → Show results as → JSON* to make it the default), then
+**Download .json** or **Copy**. Every task produces the same documented shape, `mirage-visual/v1`:
+
+```json
+{
+  "schema": "mirage-visual/v1",
+  "generated_at": "2026-11-24T00:29:11.166Z",
+  "model": { "name": "Cactus-Compute/mirage", "revision": "76c1e9e", "engine": "Cactus 4.1.4 WebAssembly", "runs_on": "browser (on-device)" },
+  "task": { "id": "plate", "title": "Car plate" },
+  "image": { "name": "car.jpg", "width": 1280, "height": 960 },
+  "elapsed_ms": 1700,
+  "coordinates": "bbox = [x0, y0, x1, y1] on a 0–1000 scale …; bbox_px = the same in pixels",
+  "answer": { "plate_number": "AE 6133CT", "confidence": 0.77, "level": "high", "candidates": [] },
+  "checklist": [{ "question": "vehicle", "answer": "car", "confidence": 0.62, "level": "medium", "probabilities": { "car": 0.62, "truck": 0.2 } }],
+  "scene": { "setting": "outdoor path" },
+  "objects": [{ "id": 1, "name": "car", "confidence": 0.925, "bbox": [173, 91, 848, 804], "bbox_px": [221, 87, 1085, 772], "attributes": { "color": "red" } }],
+  "text": [{ "text": "AE 6133CT", "confidence": 0.77, "bbox": [270, 553, 438, 597], "plate_like": true }]
+}
+```
+
+`answer` depends on the task and always has the same keys (empty results are `null` or `[]`):
+Category → `category`, `confidence`, `level`, `declined`; Car plate → `plate_number`, `confidence`,
+`level`, `candidates`; Crime scene → `marker_numbers`; Mug shot → `verdict`, `passed`, `total`, `failed`,
+`to_check`, `unclear`, `checks[]` (`rule`, `status` pass/check/fail/unclear, `detail`, `source`), `notes`.
+`level` is high (≥ 0.7), medium (≥ 0.4), low, or guess (Mirage declined and this is its best choice).
+Other sections appear only when the task produced them. Options add segmentation `mask` polygons to
+objects and the untouched model output under `raw`.
+
 ## Limits
 
 Mirage is a very small model. It does best when the subject is clear and fills much of the frame.

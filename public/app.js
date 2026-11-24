@@ -358,6 +358,7 @@ async function setImage(blob, sampleName = null) {
     state.file = blob;
     state.bitmap = bmp;
     state.sampleName = sampleName;
+    state.imageName = sampleName || blob.name || "pasted-image";
     state.result = null;
     state.hot = null;
     state.cache.clear();
@@ -800,12 +801,15 @@ function mugshotHtml(r) {
       <div class="probs"><div class="rule">${esc(x.why)} <span class="src">${esc(x.src)}</span></div></div></details></li>`).join("")}</ul></div>`;
 }
 
+// Shared by the Summary view and the JSON output so the two never disagree.
+const plateCandidates = (r) => (r.describe?.text || []).filter((t) => looksLikePlate(t.string)).sort((a, b) => (b.score || 0) - (a.score || 0));
+const markerNumbers = (r) => [...new Set((r.describe?.text || []).map((t) => String(t.string).trim()).filter((s) => /^\d{1,3}$/.test(s)))].sort((a, b) => a - b);
+
 // Task-specific answer pulled from the text pass (OCR), shown above the checklist.
 function headlineHtml(r) {
   if (r.task === "mugshot" && r.form) return mugshotHtml(r);
-  const lines = r.describe?.text || [];
   if (r.task === "plate") {
-    const plates = lines.filter((t) => looksLikePlate(t.string)).sort((a, b) => (b.score || 0) - (a.score || 0));
+    const plates = plateCandidates(r);
     const best = plates[0];
     if (!best) {
       return `<div class="answer"><div class="q">Plate number</div><div class="a none">Not read</div>
@@ -818,7 +822,7 @@ function headlineHtml(r) {
       <div class="note">Read by OCR; check it against the photo before relying on it.</div></div>`;
   }
   if (r.task === "crime") {
-    const nums = [...new Set(lines.map((t) => String(t.string).trim()).filter((s) => /^\d{1,3}$/.test(s)))].sort((a, b) => a - b);
+    const nums = markerNumbers(r);
     if (!nums.length) return "";
     return `<div class="answer"><div class="q">Evidence marker numbers read</div>
       <div class="a" style="font-family:var(--mono);font-size:20px">${nums.map(esc).join(" · ")}</div>
@@ -827,13 +831,121 @@ function headlineHtml(r) {
   return "";
 }
 
+// ---------- JSON output (schema "mirage-visual/v1") ----------
+const round3 = (n) => (typeof n === "number" && Number.isFinite(n) ? Math.round(n * 1000) / 1000 : n);
+const levelOf = (p, declined) => (declined ? "guess" : confidence(p).text.toLowerCase());
+// Drop null / undefined / empty arrays and objects so the document stays readable.
+function prune(v) {
+  if (Array.isArray(v)) { const a = v.map(prune).filter((x) => x !== undefined); return a.length ? a : undefined; }
+  if (v && typeof v === "object") {
+    const o = {};
+    for (const [k, x] of Object.entries(v)) { const y = prune(x); if (y !== undefined) o[k] = y; }
+    return Object.keys(o).length ? o : undefined;
+  }
+  return v === null || v === undefined || v === "" ? undefined : v;
+}
+
+function buildOutput(r, opts) {
+  const b = state.bitmap;
+  const toPx = (bb) => (Array.isArray(bb) && bb.length >= 4
+    ? [Math.round((bb[0] / 1000) * b.width), Math.round((bb[1] / 1000) * b.height), Math.round((bb[2] / 1000) * b.width), Math.round((bb[3] / 1000) * b.height)]
+    : undefined);
+  const d = r.describe || {};
+  const objs = d.objects || [];
+  const nameById = new Map(objs.filter((o) => o.id != null).map((o) => [o.id, o.name]));
+
+  const checklist = r.form ? Object.entries(r.form).map(([q, f]) => {
+    const x = readField(f);
+    return {
+      question: q,
+      answer: x.answer,
+      confidence: round3(x.p),
+      level: levelOf(x.p, x.declined),
+      declined: x.declined || undefined,
+      probabilities: f?.probabilities ? Object.fromEntries(Object.entries(f.probabilities).map(([k, p]) => [k === "-" ? "no_clear_match" : k, round3(p)])) : undefined,
+    };
+  }) : undefined;
+
+  let answer;
+  if (r.task === "category" && checklist?.[0]) {
+    const c = checklist[0];
+    answer = { category: c.answer ?? null, confidence: c.confidence ?? null, level: c.level, declined: !!c.declined };
+  } else if (r.task === "plate") {
+    const plates = plateCandidates(r);
+    answer = {
+      plate_number: plates[0]?.string ?? null,
+      confidence: plates[0] ? round3(plates[0].score) : null,
+      level: plates[0] ? levelOf(plates[0].score) : null,
+      candidates: plates.slice(1).map((t) => ({ text: t.string, confidence: round3(t.score) })),
+      note: "Read by OCR; verify against the photo.",
+    };
+  } else if (r.task === "crime") {
+    answer = { marker_numbers: markerNumbers(r).map(Number) };
+  } else if (r.task === "mugshot" && r.form) {
+    const { rows, notes } = mugshotChecks(r);
+    const n = (s) => rows.filter((x) => x.status === s).length;
+    answer = {
+      verdict: n("fail") ? "does_not_meet" : n("warn") || n("unclear") ? "needs_review" : "meets_checked_rules",
+      passed: n("pass"), total: rows.length, failed: n("fail"), to_check: n("warn"), unclear: n("unclear"),
+      checks: rows.map((x) => ({ rule: x.label, status: x.status === "warn" ? "check" : x.status, detail: x.detail, source: x.src })),
+      notes,
+      standards: ["NIST Best Practice Recommendation for the Capture of Mugshots (ANSI/NIST-ITL Type-10)", "OSAC 2024-N-0007"],
+    };
+  }
+
+  // The answer keeps explicit nulls / empty lists so consumers always see the same keys;
+  // everything else is pruned. "__answer__" holds the key's position until it's swapped in.
+  const doc = prune({
+    schema: "mirage-visual/v1",
+    generated_at: new Date().toISOString(),
+    model: { name: "Cactus-Compute/mirage", revision: "76c1e9e", engine: "Cactus 4.1.4 WebAssembly", runs_on: "browser (on-device)" },
+    task: { id: r.task, title: TASKS[r.task].title },
+    image: { name: state.imageName, width: b.width, height: b.height },
+    elapsed_ms: r.elapsed_ms,
+    coordinates: "bbox = [x0, y0, x1, y1] on a 0–1000 scale relative to image width/height; bbox_px = the same in pixels",
+    answer: answer ? "__answer__" : undefined,
+    checklist: r.task === "mugshot" ? undefined : checklist,
+    scene: d.scene,
+    objects: objs.map((o) => ({
+      id: o.id, name: o.name, confidence: round3(o.score), bbox: o.bbox, bbox_px: toPx(o.bbox), position: o.position,
+      attributes: o.description, mask: opts.masks ? o.mask : undefined,
+    })),
+    text: (d.text || []).map((t) => ({ text: t.string, confidence: round3(t.score), bbox: t.bbox, bbox_px: toPx(t.bbox), plate_like: looksLikePlate(t.string) || undefined })),
+    relations: (d.relations || []).map((x) => (x && typeof x === "object"
+      ? { subject: nameById.get(x.subject) ?? x.subject, predicate: x.predicate, object: nameById.get(x.object) ?? x.object, subject_id: x.subject, object_id: x.object }
+      : x)),
+    regions: d.regions,
+    events: d.events,
+    reasoning: d.reasoning ? String(d.reasoning).split("|").map((s) => s.trim()).filter((s) => s && !/^lang:/i.test(s)) : undefined,
+    raw: opts.raw ? { describe: r.describe, form: r.form } : undefined,
+  });
+  if (answer) doc.answer = answer;
+  return doc;
+}
+
+const jsonOpts = () => ({ masks: $("#json-masks").checked, raw: $("#json-raw").checked });
+const outputText = () => (state.result ? JSON.stringify(buildOutput(state.result, jsonOpts()), null, 2) : "");
+
+function renderJson() {
+  const text = outputText();
+  $("#json").textContent = text || "Run a task to see its JSON output.";
+  $("#json-size").textContent = text ? `${(new Blob([text]).size / 1024).toFixed(1)} KB` : "";
+}
+
+function setView(v) {
+  state.view = v;
+  $$(".seg button").forEach((x) => x.classList.toggle("active", x.dataset.view === v));
+  $("#view-summary").hidden = v !== "summary";
+  $("#view-json").hidden = v !== "json";
+}
+
 function renderResults() {
   const view = $("#view-summary");
   const t = TASKS[state.task];
   $("#results-title").textContent = t.title;
   const r = state.result;
   $("#results-sub").textContent = r ? `${(r.elapsed_ms / 1000).toFixed(1)} s on this device${r.steps > 1 ? ` · ${r.steps} passes` : ""}` : "";
-  $("#json").textContent = r ? JSON.stringify({ describe: r.describe, form: r.form }, (k, v) => (v === null ? undefined : v), 2) : "";
+  renderJson();
 
   if (!r) {
     view.innerHTML = !state.file
@@ -864,22 +976,29 @@ function renderAll() {
 
 // ---------- misc bindings ----------
 function bindViews() {
-  $$(".seg button").forEach((t) => t.addEventListener("click", () => {
-    state.view = t.dataset.view;
-    $$(".seg button").forEach((x) => x.classList.toggle("active", x === t));
-    $("#view-summary").hidden = state.view !== "summary";
-    $("#view-json").hidden = state.view !== "json";
-  }));
+  $$(".seg button").forEach((t) => t.addEventListener("click", () => setView(t.dataset.view)));
+  ["#json-masks", "#json-raw"].forEach((id) => $(id).addEventListener("change", renderJson));
+
+  // Default output view, remembered per browser.
+  const out = $("#default-output");
+  try { out.value = localStorage.getItem("mv-output") === "json" ? "json" : "summary"; } catch { /* storage blocked */ }
+  setView(out.value);
+  out.addEventListener("change", () => {
+    try { localStorage.setItem("mv-output", out.value); } catch { /* storage blocked */ }
+    setView(out.value);
+  });
+
   $("#copy-json").addEventListener("click", async () => {
     if (!state.result) return toast("Nothing to copy yet");
-    try { await navigator.clipboard.writeText($("#json").textContent); toast("Copied"); } catch { toast("Couldn't copy", true); }
+    try { await navigator.clipboard.writeText(outputText()); toast("JSON copied"); } catch { toast("Couldn't copy", true); }
   });
   $("#download-json").addEventListener("click", () => {
     if (!state.result) return toast("Nothing to download yet");
-    const blob = new Blob([$("#json").textContent], { type: "application/json" });
-    const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `mirage-${state.result.task}-${Date.now()}.json` });
+    const base = (state.imageName || "image").replace(/\.[^.]+$/, "").replace(/[^\w-]+/g, "-").slice(0, 40) || "image";
+    const blob = new Blob([outputText()], { type: "application/json" });
+    const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `mirage-${state.result.task}-${base}.json` });
     a.click();
-    URL.revokeObjectURL(a.href);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
   $("#run").addEventListener("click", () => { state.cache.delete(cacheKey()); run(); });
   window.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); $("#run").click(); } });
