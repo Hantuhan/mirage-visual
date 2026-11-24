@@ -4,6 +4,8 @@ A web portal for [Cactus-Compute/mirage](https://huggingface.co/Cactus-Compute/m
 2-bit vision model for scene description, object detection with masks, OCR, relations, reasoning and
 constrained form extraction.
 
+Live: [visual.leesiangfong.com](https://visual.leesiangfong.com)
+
 Mirage runs **entirely in the visitor's browser**, using Cactus's official WebAssembly engine in a Web
 Worker. There is no server: images never leave the device, and the site is plain static files (fits
 Cloudflare Pages). The first visit downloads the 21.6 MB weights (served by the site itself) and
